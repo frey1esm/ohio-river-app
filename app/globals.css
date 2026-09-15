@@ -1,26 +1,715 @@
 @import "tailwindcss";
 
+/* "Cyan Classic" palette (mockups/helm-v1-cyan.png): deep navy background,
+   bright cyan for values and the observed line, restrained low-opacity
+   cyan borders, no heavy glow. Layout follows mockups/helm-v3-chart.png
+   ("Chart First"). */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #060d19;
+  --bg-card: #0b1729;
+  /* Mockups use a clearly visible card outline, not a near-invisible hairline. */
+  --border: rgba(56, 209, 238, 0.4);
+  --ink: #f4f8fb;
+  --muted: #7d94b3;
+  --faint: #1c2c42;
+  --accent: #22d3ee;
+  --warn: #fbbf24;
+  --danger: #f43f5e;
+  --rise: #f87171;
+  --fall: #34d399;
+  --font-head: var(--font-inter), sans-serif;
+  --font-body: var(--font-inter), sans-serif;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+* {
+  box-sizing: border-box;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+html,
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 0;
+}
+
+/* The whole app is sized to exactly the visible viewport and never scrolls.
+   `dvh` (not `vh`) is what makes this hold on iOS Safari specifically: the
+   address bar/toolbar chrome can be expanded or collapsed at any moment,
+   changing how much height is actually visible, and `vh` alone measures the
+   larger "chrome collapsed" height — which is why a page sized to fit with
+   `vh` still gets its bottom edge cut off under the toolbar when the chrome
+   is expanded (as it is right after a fresh page load). `dvh` tracks
+   whichever amount is actually visible right now. Everything below is a
+   flex column where only the chart canvas (`.chart-wrap`) is allowed to
+   grow/shrink — the readings numbers keep their natural size always, and
+   whatever height is left over (more on a tall desktop window, less behind
+   an expanded Safari toolbar) goes to the chart. */
+.page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 0 0 10px;
+  /* `min-height`, not `height` — with `height`, if the real device's visible
+     area ever turns out shorter than this resolves to (a real-device report
+     showed content still getting cut off despite this matching in headless
+     testing — iOS Safari's `dvh` reporting the toolbar-collapsed height
+     while the toolbar is actually still expanded is a known inconsistency,
+     and it's not reproducible in a test environment that doesn't run real
+     Safari chrome), a hard `height` + `overflow: hidden` would silently
+     clip content with no way to reach it. `min-height` keeps the exact same
+     fit in the normal case (flex-grow below still fills the leftover space
+     up to this height) but lets `.page` grow taller — and the page scroll
+     normally — if content ever doesn't fit, so nothing is ever truly
+     unreachable. */
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (min-width: 760px) {
+  .page {
+    max-width: 900px;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ---- Compact top bar: no decorative header, title, or imagery ---- */
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.top-bar-loc {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.top-bar-sep {
+  color: var(--muted);
+  margin: 0 2px;
+}
+
+.top-bar-status {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.top-bar-status.live {
+  color: var(--fall);
+}
+.top-bar-status.partial {
+  color: var(--warn);
+}
+.top-bar-status.offline {
+  color: var(--danger);
+}
+
+.top-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.top-bar-time {
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- Layout ---- */
+.main-pad {
+  padding: 10px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.error-box {
+  border-radius: 8px;
+  padding: 14px;
+  font-size: 13px;
+  background: rgba(244, 63, 94, 0.1);
+  border: 1px solid rgba(244, 63, 94, 0.3);
+  color: #fca5a5;
+  flex-shrink: 0;
+}
+
+/* ---- Shared label chrome ---- */
+.card-label-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.hero-label {
+  font-family: var(--font-head);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--ink);
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.stat-lbl {
+  font-family: var(--font-head);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* ---- Compact water-temperature shortcut (upper-right of Current
+   Conditions). A restrained secondary reading that, on activation, jumps
+   the chart to its Temp tab; source/timestamp/freshness detail lives on
+   that tab's info button. ---- */
+.stage-label-row {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.label-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.temp-shortcut {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 40px;
+  padding: 6px 9px;
+  border: 1px solid var(--faint);
+  border-radius: 9px;
+  background: rgba(34, 211, 238, 0.06);
+  color: var(--ink);
+  font-family: var(--font-head);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.temp-shortcut:hover,
+.temp-shortcut:focus-visible {
+  border-color: var(--border);
+  background: rgba(34, 211, 238, 0.13);
+}
+
+.temp-shortcut svg {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+/* Near-white, deliberately quieter than the large cyan stage number. */
+.temp-shortcut-val {
+  color: #ddeef6;
+}
+
+.temp-shortcut-warn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: rgba(251, 191, 36, 0.18);
+  color: var(--warn);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* ---- Freshness / stale / unavailable badges ---- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-head);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 5px;
+  vertical-align: middle;
+}
+
+.badge-unknown {
+  background: rgba(125, 148, 179, 0.14);
+  color: var(--muted);
+  border: 1px solid rgba(125, 148, 179, 0.3);
+}
+
+.badge-outdated {
+  background: rgba(244, 63, 94, 0.12);
+  color: var(--danger);
+  border: 1px solid rgba(244, 63, 94, 0.3);
+}
+
+.unavailable-note {
+  font-size: 13px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ---- Info popover ---- */
+.info-popover {
+  position: relative;
+  display: inline-flex;
+}
+
+.info-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  /* Enlarges the touch target beyond the visible circle without the
+     negative margin pulling it into the preceding label text (that was
+     causing a visible overlap with the card label). */
+  padding: 9px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(125, 148, 179, 0.35);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-style: italic;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.info-btn:hover,
+.info-btn[aria-expanded="true"] {
+  background: var(--accent);
+  color: #06202a;
+}
+
+.info-panel {
+  position: absolute;
+  z-index: 20;
+  top: 26px;
+  left: 0;
+  width: max-content;
+  max-width: 250px;
+  background: #0a1424;
+  border: 1px solid rgba(34, 211, 238, 0.25);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* ---- Chart ---- */
+.chart-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
+.ctab-group {
+  display: flex;
+  gap: 4px;
+}
+
+.ctab {
+  font-family: var(--font-head);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  padding: 4px 10px;
+  min-height: 30px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.ctab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06202a;
+}
+
+.flood-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  padding: 4px 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 42px;
+  height: 24px;
+  min-width: 42px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--faint);
+}
+
+.switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #f4f8fb;
+  transition: transform 0.15s ease;
+}
+
+.switch.on .switch-knob {
+  transform: translateX(18px);
+}
+
+/* No border/background here — the chart now lives inside the single
+   unified `.panel` (see below), not its own separate card. */
+.chart-section {
+  padding: 0 2px 2px;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+
+.chart-header-title {
+  font-family: var(--font-head);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.chart-header-source {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.chart-wrap {
+  position: relative;
+  width: 100%;
+  /* Deliberately no fixed/clamped height here — this is the one element
+     that grows or shrinks to absorb whatever room is actually left over in
+     the viewport (see `.page`). `min-height` is just a legibility floor for
+     pathologically short viewports; there's no max, so a tall window (or a
+     collapsed Safari toolbar) gives the chart the extra space instead of
+     leaving it as dead space below the panel. */
+  flex: 1 1 auto;
+  min-height: 100px;
+}
+
+.bottom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-top: 3px;
+  padding: 0 4px;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.legend {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.leg-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.leg-solid {
+  width: 16px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.leg-dashed {
+  width: 16px;
+  height: 0;
+  border-top: 2px dashed var(--warn);
+}
+
+.sources {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ================================================================
+   Unified instrument panel (mockups/helm — one bordered panel with
+   internal separators, replacing four separate cards).
+   ================================================================ */
+.panel {
+  background: var(--bg-card);
+  border: 1.5px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* The readings grid keeps its natural size; the chart below it absorbs
+     whatever height is actually left over (see `.page`). */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.panel-readings {
+  display: grid;
+  /* ~70/30 split, adjusting proportionally (not via a breakpoint jump) as
+     the viewport narrows, per "adjust slightly at narrow widths." */
+  grid-template-columns: minmax(0, 7fr) 1px minmax(0, 3fr);
+  flex-shrink: 0;
+}
+
+.readings-primary {
+  padding: 10px 16px;
+  min-width: 0;
+}
+
+.readings-divider {
+  /* Amber-toned to match the forecast side, not the panel's cyan border. */
+  background: rgba(251, 191, 36, 0.3);
+}
+
+.readings-forecast {
+  padding: 10px 14px;
+  min-width: 0;
+  background: rgba(251, 191, 36, 0.05);
+}
+
+/* Explicit current-vs-forecast column headings, aligned at the same height
+   via matching padding/font-size/margin on both sides. */
+.column-heading {
+  font-family: var(--font-head);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.column-heading-current {
+  color: var(--accent);
+}
+
+.column-heading-forecast {
+  color: var(--warn);
+}
+
+.stage-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.stage-value {
+  font-family: var(--font-head);
+  font-weight: 800;
+  line-height: 1;
+  color: var(--accent);
+  font-size: clamp(46px, 15vw, 76px);
+  letter-spacing: -0.01em;
+}
+
+.stage-unit {
+  font-family: var(--font-head);
+  font-size: clamp(16px, 4vw, 22px);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.velocity-row {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--faint);
+}
+
+.velocity-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.velocity-value {
+  font-family: var(--font-head);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+  font-size: clamp(24px, 8vw, 34px);
+}
+
+.velocity-unit {
+  font-family: var(--font-head);
+  font-size: clamp(13px, 3.5vw, 16px);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.reading-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.forecast-label {
+  font-family: var(--font-head);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.forecast-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.forecast-value {
+  font-family: var(--font-head);
+  font-weight: 800;
+  line-height: 1;
+  color: var(--warn);
+  font-size: clamp(22px, 7vw, 32px);
+}
+
+.forecast-unit {
+  font-family: var(--font-head);
+  font-size: clamp(12px, 3vw, 15px);
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.forecast-sub {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.forecast-sep {
+  height: 1px;
+  background: var(--faint);
+  margin: 8px 0;
+}
+
+.panel-sep {
+  height: 1px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.panel-chart {
+  padding: 12px 12px 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-root {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
