@@ -5,6 +5,11 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(__dirname),
   },
+  // Produces a self-contained `.next/standalone` build (a trimmed
+  // node_modules plus a generated server.js) for the Docker image — so the
+  // runtime image only needs that folder plus `public/` and `.next/static`,
+  // not the full dependency tree.
+  output: "standalone",
   // The dev-only route indicator badge isn't part of the app's design and
   // was overlapping card content on short viewports during design review;
   // it never appears in production builds either way.
